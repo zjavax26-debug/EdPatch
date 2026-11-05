@@ -1,0 +1,1 @@
+# LumpForge ProGuard rules
