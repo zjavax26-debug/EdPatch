@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
@@ -74,6 +75,9 @@ private fun LumpForgeApp() {
     var currentFolder by remember { mutableStateOf<DocumentFile?>(null) }
     var entries by remember { mutableStateOf<List<BrowserEntry>>(emptyList()) }
     var selectedEntry by remember { mutableStateOf<BrowserEntry?>(null) }
+    var openedWad by remember { mutableStateOf<BrowserEntry?>(null) }
+    var wadArchive by remember { mutableStateOf<WadArchive?>(null) }
+    var selectedLump by remember { mutableStateOf<WadLump?>(null) }
     var isLoading by remember { mutableStateOf(false) }
     var loadError by remember { mutableStateOf<String?>(null) }
 
@@ -94,6 +98,8 @@ private fun LumpForgeApp() {
             rootFolder = folder
             currentFolder = folder
             selectedEntry = null
+            openedWad = null
+            wadArchive = null
         }
     }
 
@@ -134,21 +140,46 @@ private fun LumpForgeApp() {
         }
     }
 
+    LaunchedEffect(openedWad?.document?.uri) {
+        val wad = openedWad
+        if (wad == null) {
+            wadArchive = null
+            selectedLump = null
+            return@LaunchedEffect
+        }
+
+        isLoading = true
+        loadError = null
+        wadArchive = null
+        selectedLump = null
+
+        try {
+            val parsed = withContext(Dispatchers.IO) {
+                val input = context.contentResolver.openInputStream(wad.document.uri)
+                    ?: throw IllegalStateException("Android no pudo abrir este archivo.")
+                input.use { WadReader.read(it, wad.size) }
+            }
+            wadArchive = parsed
+        } catch (error: Exception) {
+            loadError = error.localizedMessage ?: "No se pudo interpretar el WAD."
+        } finally {
+            isLoading = false
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
                     Column {
                         Text("LumpForge", fontWeight = FontWeight.SemiBold)
-                        currentFolder?.name?.let { folderName ->
-                            Text(
-                                folderName,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
+                        Text(
+                            openedWad?.name ?: currentFolder?.name.orEmpty(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 },
                 actions = {
@@ -164,7 +195,33 @@ private fun LumpForgeApp() {
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            if (rootFolder != null) {
+            if (openedWad != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            openedWad = null
+                            wadArchive = null
+                            selectedLump = null
+                            loadError = null
+                        }
+                    ) {
+                        Text("←  Volver")
+                    }
+                    Text(
+                        wadArchive?.let { "${it.format} · ${it.lumps.size} recursos" }
+                            ?: "Leyendo directorio WAD…",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                HorizontalDivider()
+            } else if (rootFolder != null) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -216,6 +273,21 @@ private fun LumpForgeApp() {
                     Text(loadError ?: "Error", color = MaterialTheme.colorScheme.error)
                 }
 
+                openedWad != null && wadArchive != null -> {
+                    WadContents(
+                        lumps = wadArchive!!.lumps,
+                        selectedLump = selectedLump,
+                        onSelect = { selectedLump = it }
+                    )
+                }
+
+                openedWad != null -> Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("No se pudo cargar el directorio WAD.")
+                }
+
                 entries.isEmpty() -> Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
@@ -234,6 +306,10 @@ private fun LumpForgeApp() {
                             onClick = {
                                 if (entry.isDirectory) {
                                     currentFolder = entry.document
+                                } else if (entry.name.substringAfterLast('.', "")
+                                        .equals("wad", ignoreCase = true)) {
+                                    selectedEntry = null
+                                    openedWad = entry
                                 } else {
                                     selectedEntry = entry
                                 }
@@ -263,7 +339,89 @@ private fun LumpForgeApp() {
                             "${formatSize(entry.size)} · ${entry.mimeType ?: "Tipo desconocido"}",
                             style = MaterialTheme.typography.bodySmall
                         )
+                        if (entry.name.substringAfterLast('.', "").equals("wad", true)) {
+                            Text(
+                                "Toca el archivo para explorar sus recursos internos.",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WadContents(
+    lumps: List<WadLump>,
+    selectedLump: WadLump?,
+    onSelect: (WadLump) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text("Nombre", fontWeight = FontWeight.SemiBold)
+            Text("Tamaño", fontWeight = FontWeight.SemiBold)
+        }
+        HorizontalDivider()
+        LazyColumn(modifier = Modifier.weight(1f)) {
+            items(lumps, key = { it.index }) { lump ->
+                val selected = selectedLump?.index == lump.index
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onSelect(lump) },
+                    color = if (selected) MaterialTheme.colorScheme.secondaryContainer
+                    else MaterialTheme.colorScheme.surface
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(lumpGlyph(lump.name))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                lump.name.ifBlank { "(sin nombre)" },
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                "${lumpCategory(lump.name)} · #${lump.index + 1}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Text(formatSize(lump.size))
+                    }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+            }
+        }
+
+        selectedLump?.let { lump ->
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Text("Recurso seleccionado", fontWeight = FontWeight.SemiBold)
+                    Text(lump.name.ifBlank { "(sin nombre)" })
+                    Text("Índice: ${lump.index} · ${lumpCategory(lump.name)}")
+                    Text("Offset: ${lump.offset} bytes")
+                    Text("Tamaño: ${formatSize(lump.size)}")
                 }
             }
         }
@@ -341,8 +499,40 @@ private fun FileRow(
                 Text("Seleccionado", style = MaterialTheme.typography.labelSmall)
             } else if (entry.isDirectory) {
                 Text("›", style = MaterialTheme.typography.titleLarge)
+            } else if (entry.name.substringAfterLast('.', "").equals("wad", true)) {
+                Text("Abrir", style = MaterialTheme.typography.labelSmall)
             }
         }
+    }
+}
+
+private fun lumpCategory(name: String): String {
+    val upper = name.uppercase(Locale.ROOT)
+    return when {
+        upper in setOf("F_START", "FF_START", "F_END", "FF_END",
+            "S_START", "SS_START", "S_END", "SS_END",
+            "P_START", "PP_START", "P_END", "PP_END") -> "Marcador"
+        upper.matches(Regex("E[1-4]M[1-9][0-9]?")) ||
+            upper.matches(Regex("MAP[0-9]{2}")) -> "Mapa"
+        upper.startsWith("PLAY") || upper.startsWith("TROO") ||
+            upper.startsWith("SARG") || upper.startsWith("POSS") -> "Gráfico / sprite"
+        upper.startsWith("DS") -> "Sonido"
+        upper.startsWith("D_") -> "Música"
+        upper.startsWith("THINGS") || upper.startsWith("LINEDEFS") ||
+            upper.startsWith("SIDEDEFS") || upper.startsWith("VERTEXES") ||
+            upper.startsWith("SECTORS") || upper.startsWith("NODES") ||
+            upper.startsWith("SEGS") || upper.startsWith("SSECTORS") -> "Datos de mapa"
+        else -> "Recurso"
+    }
+}
+
+private fun lumpGlyph(name: String): String {
+    return when (lumpCategory(name)) {
+        "Mapa", "Datos de mapa" -> "🗺️"
+        "Gráfico / sprite" -> "🖼️"
+        "Sonido", "Música" -> "🔊"
+        "Marcador" -> "📌"
+        else -> "📦"
     }
 }
 
