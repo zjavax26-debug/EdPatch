@@ -345,6 +345,8 @@ private fun LumpForgeApp() {
                     WadContents(
                         lumps = wadArchive!!.lumps,
                         selectedLump = selectedLump,
+                        previewBitmap = previewBitmap,
+                        previewMessage = previewMessage,
                         onSelect = { selectedLump = it }
                     )
                 }
@@ -424,6 +426,8 @@ private fun LumpForgeApp() {
 private fun WadContents(
     lumps: List<WadLump>,
     selectedLump: WadLump?,
+    previewBitmap: Bitmap?,
+    previewMessage: String,
     onSelect: (WadLump) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
