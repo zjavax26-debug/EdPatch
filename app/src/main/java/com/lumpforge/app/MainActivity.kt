@@ -88,6 +88,8 @@ private fun LumpForgeApp() {
     var selectedLump by remember { mutableStateOf<WadLump?>(null) }
     var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var previewMessage by remember { mutableStateOf("Selecciona un recurso para intentar previsualizarlo.") }
+    var cachedDoomPalette by remember { mutableStateOf<ByteArray?>(null) }
+    var cachedPaletteSource by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(false) }
     var loadError by remember { mutableStateOf<String?>(null) }
 
@@ -170,6 +172,16 @@ private fun LumpForgeApp() {
                 input.use { WadReader.read(it, wad.size) }
             }
             wadArchive = parsed
+            val paletteLump = parsed.lumps.firstOrNull {
+                it.name.equals("PLAYPAL", ignoreCase = true)
+            }
+            if (paletteLump != null && paletteLump.size >= 768L) {
+                val palette = withContext(Dispatchers.IO) {
+                    readWadBytes(context, wad, paletteLump.offset, 768)
+                }
+                cachedDoomPalette = palette
+                cachedPaletteSource = wad.name
+            }
         } catch (error: Exception) {
             loadError = error.localizedMessage ?: "No se pudo interpretar el WAD."
         } finally {
@@ -177,7 +189,12 @@ private fun LumpForgeApp() {
         }
     }
 
-    LaunchedEffect(openedWad?.document?.uri, selectedLump?.index, wadArchive?.lumps?.size) {
+    LaunchedEffect(
+        openedWad?.document?.uri,
+        selectedLump?.index,
+        wadArchive?.lumps?.size,
+        cachedPaletteSource
+    ) {
         val wad = openedWad
         val lump = selectedLump
         val archive = wadArchive
@@ -201,7 +218,13 @@ private fun LumpForgeApp() {
                         ?: throw IllegalArgumentException("Este recurso no parece ser una imagen tipo Doom patch compatible.")
                 }
                 previewBitmap = result
-                previewMessage = "Vista previa de imagen Doom."
+                previewMessage = if (
+                    archive.lumps.none { it.name.equals("PLAYPAL", ignoreCase = true) }
+                ) {
+                    "Vista previa con la paleta de ${cachedPaletteSource ?: "IWAD"}."
+                } else {
+                    "Vista previa de imagen Doom."
+                }
             } catch (error: Exception) {
                 previewMessage = error.localizedMessage ?: "No se pudo generar la vista previa."
             }
