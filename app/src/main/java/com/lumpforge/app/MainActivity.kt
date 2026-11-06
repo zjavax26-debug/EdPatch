@@ -6,6 +6,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,6 +16,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -37,11 +41,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import android.graphics.Bitmap
+import android.graphics.Color
 import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -77,6 +86,8 @@ private fun LumpForgeApp() {
     var openedWad by remember { mutableStateOf<BrowserEntry?>(null) }
     var wadArchive by remember { mutableStateOf<WadArchive?>(null) }
     var selectedLump by remember { mutableStateOf<WadLump?>(null) }
+    var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var previewMessage by remember { mutableStateOf("Selecciona un recurso para intentar previsualizarlo.") }
     var isLoading by remember { mutableStateOf(false) }
     var loadError by remember { mutableStateOf<String?>(null) }
 
@@ -166,6 +177,37 @@ private fun LumpForgeApp() {
         }
     }
 
+    LaunchedEffect(openedWad?.document?.uri, selectedLump?.index, wadArchive?.lumps?.size) {
+        val wad = openedWad
+        val lump = selectedLump
+        val archive = wadArchive
+        previewBitmap = null
+
+        if (wad == null || lump == null || archive == null) {
+            previewMessage = "Selecciona un recurso para intentar previsualizarlo."
+        } else {
+            previewMessage = "Preparando vista previa…"
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    val paletteLump = archive.lumps.firstOrNull {
+                        it.name.equals("PLAYPAL", ignoreCase = true)
+                    } ?: throw IllegalStateException("Este WAD no contiene PLAYPAL.")
+                    if (lump.size !in 8L..(8L * 1024L * 1024L)) {
+                        throw IllegalArgumentException("El recurso está vacío o supera el límite de vista previa.")
+                    }
+                    val palette = readWadBytes(context, wad, paletteLump.offset, 768)
+                    val bytes = readWadBytes(context, wad, lump.offset, lump.size.toInt())
+                    WadGraphicDecoder.decodePatch(bytes, palette)
+                        ?: throw IllegalArgumentException("Este recurso no parece ser una imagen tipo Doom patch compatible.")
+                }
+                previewBitmap = result
+                previewMessage = "Vista previa de imagen Doom."
+            } catch (error: Exception) {
+                previewMessage = error.localizedMessage ?: "No se pudo generar la vista previa."
+            }
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -210,7 +252,34 @@ private fun LumpForgeApp() {
                             loadError = null
                         }
                     ) {
-                        Text("←  Volver")
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Canvas(modifier = Modifier.size(18.dp)) {
+                                val stroke = 2.dp.toPx()
+                                val midY = size.height / 2f
+                                drawLine(
+                                    color = androidx.compose.ui.graphics.Color.Black,
+                                    start = Offset(size.width * 0.88f, midY),
+                                    end = Offset(size.width * 0.18f, midY),
+                                    strokeWidth = stroke,
+                                    cap = StrokeCap.Round
+                                )
+                                drawLine(
+                                    color = androidx.compose.ui.graphics.Color.Black,
+                                    start = Offset(size.width * 0.18f, midY),
+                                    end = Offset(size.width * 0.48f, midY - size.height * 0.30f),
+                                    strokeWidth = stroke,
+                                    cap = StrokeCap.Round
+                                )
+                                drawLine(
+                                    color = androidx.compose.ui.graphics.Color.Black,
+                                    start = Offset(size.width * 0.18f, midY),
+                                    end = Offset(size.width * 0.48f, midY + size.height * 0.30f),
+                                    strokeWidth = stroke,
+                                    cap = StrokeCap.Round
+                                )
+                            }
+                            Text("Volver")
+                        }
                     }
                     Text(
                         wadArchive?.let { "${it.format} · ${it.lumps.size} recursos" }
@@ -421,6 +490,20 @@ private fun WadContents(
                     Text("Índice: ${lump.index} · ${lumpCategory(lump.name)}")
                     Text("Offset: ${lump.offset} bytes")
                     Text("Tamaño: ${formatSize(lump.size)}")
+                    Text(
+                        previewMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    previewBitmap?.let { bitmap ->
+                        Image(
+                            bitmap = bitmap.asImageBitmap(),
+                            contentDescription = "Vista previa de ${lump.name}",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 260.dp)
+                        )
+                    }
                 }
             }
         }
@@ -502,6 +585,39 @@ private fun FileRow(
                 Text("Abrir", style = MaterialTheme.typography.labelSmall)
             }
         }
+    }
+}
+
+
+private fun readWadBytes(
+    context: android.content.Context,
+    wad: BrowserEntry,
+    offset: Long,
+    length: Int
+): ByteArray {
+    require(offset >= 0 && length >= 0 && offset + length <= wad.size) {
+        "El recurso está fuera de los límites del WAD."
+    }
+    val input = context.contentResolver.openInputStream(wad.document.uri)
+        ?: throw IllegalStateException("Android no pudo abrir el WAD.")
+    input.use { stream ->
+        var remaining = offset
+        while (remaining > 0) {
+            val skipped = stream.skip(remaining)
+            if (skipped > 0) remaining -= skipped
+            else {
+                if (stream.read() == -1) throw java.io.EOFException("Fin inesperado del WAD.")
+                remaining--
+            }
+        }
+        val bytes = ByteArray(length)
+        var read = 0
+        while (read < length) {
+            val count = stream.read(bytes, read, length - read)
+            if (count < 0) throw java.io.EOFException("Recurso WAD incompleto.")
+            read += count
+        }
+        return bytes
     }
 }
 
